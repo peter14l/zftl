@@ -1,125 +1,94 @@
-# HyperRAM™: Silicon IP & Compressed Memory Architecture
+# zFTL: In-Line Compressed Flash Translation Layer for QLC SSDs
 
-[![CI Build & Verification](https://github.com/peter14l/hyper-ram/actions/workflows/ci.yml/badge.svg)](https://github.com/peter14l/hyper-ram/actions/workflows/ci.yml)
 [![Standard C++20](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://en.cppreference.com/w/cpp/20)
-[![Synthesizable Verilog](https://img.shields.io/badge/Hardware-Verilog%202001%20%2F%20AXI4--Full-orange.svg)](file:///d:/hyper_ram/hdl/hyper_ram_axi_top.v)
-[![License](https://img.shields.io/badge/License-Silicon%20IP%20Evaluation-green.svg)](file:///d:/hyper_ram/LICENSE)
+[![Target-Flash](https://img.shields.io/badge/Target-3D%20QLC%20NAND%20Flash-orange.svg)](https://www.micron.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](file:///d:/hyper_ram/LICENSE)
 
-> **Synthesizable AXI4-Full Hardware IP Block & Software Reference Engine for 2:1 Real-Time Lossless Memory Expansion**  
-> *Enabling 4GB/8GB Consumer & Edge AI SoCs to perform like 8GB/16GB devices through sub-5ns parallel cache line compression.*
-
----
-
-## 🚀 Commercial Highlights for Chip Architects & OEMs
-
-* **BOM Cost Reduction**: Cut physical DRAM packages on PCB in half, saving **$15 to $25 per consumer laptop/tablet** and **$1,200+ per cloud server node**.
-* **Silicon Footprint**: ~24,000 logic gates (**< $0.03 silicon area** on TSMC 28nm/16nm/7nm nodes).
-* **Deterministic Latency**: 2 clock cycles hardware compression, 1 cycle hardware decompression.
-* **Effective Bandwidth Multiplier**: Increases effective memory bus bandwidth by **1.6x – 2.1x** on cache-miss streams.
+> **An architectural simulator and digital hardware design for an in-line hardware-compressed Flash Translation Layer (FTL).**  
+> *Designed to reduce Write Amplification Factor (WAF) and extend the physical endurance of budget QLC SSDs (like the Micron 2400 512GB).*
 
 ---
 
-## 📁 Commercial IP Package & Documentation
+## 💡 The Real-World Problem: The QLC SSD Endurance Crisis
 
-| Document | Description |
-| :--- | :--- |
-| 📄 [**HYPERRAM_IP_DATASHEET.md**](docs/ip_package/HYPERRAM_IP_DATASHEET.md) | Full architectural specifications, TSMC 28nm/16nm/7nm PPA synthesis metrics, pinouts, and timing budgets. |
-| 🛠️ [**IP_INTEGRATION_GUIDE.md**](docs/ip_package/IP_INTEGRATION_GUIDE.md) | SoC integration manual, Synopsys Design Compiler TCL scripts, SDC timing constraints, and Vivado IP-XACT instructions. |
-| 💰 [**CUSTOMER_ROI_AND_PITCH.md**](docs/ip_package/CUSTOMER_ROI_AND_PITCH.md) | Executive whitepaper, OEM financial return models, and commercial licensing tiers. |
+Consumer solid-state drives in budget laptops and student computers (e.g., Lenovo LOQ, HP Victus, Dell Inspiron) increasingly ship with high-density **3D QLC (Quad-Level Cell) NAND Flash** (such as the Micron 2400 512GB NVMe SSD).
 
----
-
-## 💡 The Core Problem: The Memory Inflation Crisis
-
-Global semiconductor capacity has shifted aggressively toward high-margin High-Bandwidth Memory (HBM) and enterprise AI clusters. Consequently:
-* **Consumer DRAM prices have spiked**: Budget laptops and mobile devices remain permanently bottlenecked by **8GB or 16GB of soldered, non-upgradable RAM**.
-* **The OS Swap Penalty**: When modern multi-tab web browsers, local developer tools, or AI inference workloads exceed 8GB, operating systems start **paging/swapping to disk**. Traditional SSD swap causes severe system stuttering (50–100µs latency spikes) and degrades consumer flash endurance.
+While QLC enables affordable storage, it comes with severe physical tradeoffs:
+1. **Extremely Low Write Endurance**:
+   * Storing 4 bits per cell requires managing 16 precise voltage states.
+   * A typical 512GB QLC SSD is officially rated for only **~150 TBW (Terabytes Written)**, compared to 300–600 TBW for more expensive TLC drives.
+2. **Heavy Background OS Wear**:
+   * Everyday operating system activity—virtual memory paging, Chrome/Edge browser caches, and Windows telemetry logs—constantly writes tens of gigabytes to disk every day.
+   * These non-stop background writes rapidly degrade flash health (often consuming 8% to 10% of total drive lifespan within the first year).
+3. **Slow Flash Program Latencies**:
+   * Programming physical QLC flash cells is slow (500 µs to 1,500 µs per page).
 
 ---
 
-## ⚡ The Solution: HyperRAM Architecture
+## ⚡ The Solution: In-Line FTL Hardware Compression
 
-Instead of relying on multi-billion dollar cleanroom fabs, **HyperRAM** solves the memory bottleneck directly at the **controller layer**:
-
-1. **Sub-5ns Line Compression**: Utilizes **Base-Delta-Immediate (BDI)** parallel delta arithmetic to compress 64-byte CPU cache lines in hardware within **2 clock cycles**.
-2. **2:1 Virtual RAM Expansion**: A device with 8GB physical DRAM presents a **16GB virtual memory space**, preventing OS swap thrashing.
-3. **Silicon Area & BOM Savings**: Cuts the required number of physical DRAM chips in half, saving **$15 to $25 per unit** for consumer OEMs.
-
----
-
-## 📊 Performance & Economic Overview
-
-| Metric | Standard 8GB Budget PC | HyperRAM Virtualized (8GB Physical) | Apple Unified Memory (M3 8GB) |
-| :--- | :--- | :--- | :--- |
-| **Effective Memory Capacity** | 8 GB | **~14 to 16 GB** | **~14 to 16 GB** |
-| **Multitasking Behavior** | Stutters / Freezes on Swap | **Smooth (Zero Swap Freezing)** | **Smooth** |
-| **Decompression Latency** | N/A | **1 cycle (~1.5–5 ns)** | Proprietary Hardware (~5ns) |
-| **Physical DRAM Cost** | Baseline | **~45% BOM Reduction** | High Proprietary Premium |
-| **Open & Synthesizable** | Closed | **Yes (AXI4-Full Verilog RTL)** | Proprietary |
-
----
-
-## 📁 Repository Structure
+Instead of requiring expensive enterprise flash dies, **zFTL** attacks the problem inside the **SSD Controller's Flash Translation Layer (FTL)**:
 
 ```
-hyper_ram/
-├── .github/workflows/
-│   └── ci.yml                      # Automated GitHub Actions CI (C++ & Verilog testbenches)
-├── include/
-│   ├── bdi_engine.hpp              # Base-Delta-Immediate compression engine interface
-│   ├── line_table.hpp              # Memory Line Table (MLT) 16B/32B/48B/64B allocator
-│   ├── hyper_ram_controller.hpp    # Byte-addressable controller & pipeline model
-│   └── win_mem_utils.hpp           # Standalone Windows memory compaction API utilities
-├── src/
-│   ├── bdi_engine.cpp              # C++20 vectorized BDI implementation
-│   ├── line_table.cpp              # Chunk buddy allocator & physical buffer manager
-│   ├── hyper_ram_controller.cpp    # Read-Modify-Write line coalescing logic
-│   ├── tests.cpp                   # Comprehensive 8-stage lossless verification suite
-│   ├── main.cpp                    # CLI benchmark runner & live telemetry dashboard
-│   ├── win_optimizer.cpp           # 24x7 Real-time Windows RAM compactor (interactive CLI)
-│   └── win_silent_daemon.cpp       # 100% invisible background Windows memory daemon
-├── hdl/
-│   ├── axi_async_fifo.v            # Dual-clock Gray-code CDC FIFO for CPU/DRAM decoupling
-│   ├── bdi_decoder_64b.v           # Single-cycle 512-bit hardware decompressor (Verilog)
-│   ├── bdi_encoder_64b.v           # 2-stage pipelined BDI hardware encoder (Verilog)
-│   ├── hyper_ram_axi_top.v         # Production AXI4-Full synthesizable memory controller
-│   └── tb_hyper_ram_top.v          # Self-checking clock-accurate AXI4 RTL testbench
-├── docs/
-│   └── ip_package/
-│       ├── HYPERRAM_IP_DATASHEET.md# Commercial IP datasheet with TSMC PPA synthesis metrics
-│       ├── IP_INTEGRATION_GUIDE.md # SoC integration manual with Synopsys/Vivado scripts
-│       └── CUSTOMER_ROI_AND_PITCH.md# Executive whitepaper & commercial licensing tiers
-└── CMakeLists.txt                  # Standalone CMake build configuration
+[ Host OS (Windows / Linux) ]
+              │  Writes 4 KB Logical Blocks (LBAs)
+              ▼
+    [ zFTL Controller ]
+              │
+              ├──► [ Real-Time Compression Engine (LZ4) ]  (~1 µs)
+              │         Shrinks compressible 4 KB data to ~1.5 - 2 KB
+              │
+              ├──► [ Chunk Packing & LBA Mapping Table ]
+              │         Packs two compressed blocks into a single 4 KB physical flash page
+              ▼
+   [ Physical 3D QLC NAND Flash ]  (Only 1 physical page programmed instead of 2!)
 ```
+
+### Key Architectural Benefits:
+* **Cuts Physical Writes in Half**: On compressible system traffic (logs, browser cache, pagefile heaps), writing half as much data drops the **Write Amplification Factor (WAF)** below 1.0 (from 1.3+ down to ~0.65).
+* **Doubles Drive Lifespan**: A 150 TBW budget QLC drive with a 0.65 WAF effectively endures the equivalent of **230+ TBW of host writes**.
+* **Faster Write Speeds**: Spending 1 microsecond on hardware compression eliminates 500+ microseconds of slow physical flash programming.
+* **Virtual Capacity Expansion**: Allows a 512GB drive to hold significantly more user data before filling up.
+
+---
+
+## 📁 Repository Structure & AI Context
+
+* [`AGENTS.md`](file:///d:/hyper_ram/AGENTS.md) — **Persistent instructions and architectural boundaries for AI assistants.** Read this before suggesting code or starting new sessions.
+* [`PROGRESS.md`](file:///d:/hyper_ram/PROGRESS.md) — **Living roadmap and active task tracker.** Check this to resume work seamlessly.
+* [`include/`](file:///d:/hyper_ram/include/) — C++ headers for the compression engine, flash array model, and FTL mapping table.
+* [`src/`](file:///d:/hyper_ram/src/) — Core C++ simulator implementation and benchmark telemetry runner.
+* [`hdl/`](file:///d:/hyper_ram/hdl/) — Synthesizable Verilog RTL designs for hardware acceleration.
+* [`build.ps1`](file:///d:/hyper_ram/build.ps1) — One-click build and verification script for Windows PowerShell.
 
 ---
 
 ## 🛠️ How to Build and Run Locally
 
 ### Requirements
-* **C++ Compiler**: Visual Studio 2022 (MSVC) or Clang/GCC with C++20 support.
-* **Build Tool**: CMake 3.20 or newer.
+* **Compiler**: Visual Studio 2022 (MSVC with C++ Desktop Development) or Clang/GCC with C++20 support.
+* **Build Tool**: CMake 3.20+ (included with Visual Studio).
 
+### Quick Build & Test (PowerShell)
 ```powershell
-# 1. Configure with CMake
+# Run one-click build and test suite
+.\build.ps1
+```
+
+### Manual Build with CMake
+```powershell
+# 1. Configure build directory
 cmake -B build -G "Visual Studio 17 2022" -A x64
 
 # 2. Build in Release Mode
 cmake --build build --config Release
 
-# 3. Run the Unit Test Verification Suite (8/8 Lossless Tests)
+# 3. Run the Verification Suite
 .\build\Release\hyper_ram_tests.exe
-
-# 4. Run the Real-World Benchmark & Telemetry
-.\build\Release\hyper_ram_sim.exe
 ```
 
 ---
 
-## 📄 Intellectual Property & Commercial Evaluation
+## 🗺️ Project Roadmap
 
-**Copyright © 2026 HyperRAM Project. All Rights Reserved.**  
-This repository contains synthesizable Silicon IP Cores, hardware testbenches, and software simulation models.
-
-* **Academic & Evaluation License**: 30-day non-commercial evaluation permitted under NDA.
-* **Commercial Tape-Out Licensing**: Contact `peter_parker_2008@outlook.com` for production RTL access and per-unit royalty terms.
+See [`PROGRESS.md`](file:///d:/hyper_ram/PROGRESS.md) for the active milestone breakdown, current tasks, and recent changes.

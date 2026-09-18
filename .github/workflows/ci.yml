@@ -1,4 +1,4 @@
-name: HyperRAM Silicon IP & C++ Continuous Integration
+name: zFTL Storage Architecture & Hardware RTL CI
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   cpp_verification:
-    name: C++20 Golden Model & Unit Tests
+    name: C++20 Storage FTL & Unit Tests
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -25,30 +25,38 @@ jobs:
       - name: Build C++ Test Suite
         run: cmake --build build --config ${{ matrix.build_type }}
 
-      - name: Run Lossless BDI Unit & Stress Tests
+      - name: Run Lossless FTL Unit & Verification Tests
         run: |
-          if [ -f "./build/Release/hyper_ram_tests.exe" ]; then
+          if [ -f "./build/Release/zftl_tests.exe" ]; then
+            ./build/Release/zftl_tests.exe
+          elif [ -f "./build/zftl_tests.exe" ]; then
+            ./build/zftl_tests.exe
+          elif [ -f "./build/zftl_tests" ]; then
+            ./build/zftl_tests
+          elif [ -f "./build/Release/hyper_ram_tests.exe" ]; then
             ./build/Release/hyper_ram_tests.exe
-          elif [ -f "./build/hyper_ram_tests.exe" ]; then
-            ./build/hyper_ram_tests.exe
           else
             ./build/hyper_ram_tests
           fi
         shell: bash
 
-      - name: Run Simulation Benchmark
+      - name: Run WAF Simulation Benchmark
         run: |
-          if [ -f "./build/Release/hyper_ram_sim.exe" ]; then
+          if [ -f "./build/Release/zftl_sim.exe" ]; then
+            ./build/Release/zftl_sim.exe
+          elif [ -f "./build/zftl_sim.exe" ]; then
+            ./build/zftl_sim.exe
+          elif [ -f "./build/zftl_sim" ]; then
+            ./build/zftl_sim
+          elif [ -f "./build/Release/hyper_ram_sim.exe" ]; then
             ./build/Release/hyper_ram_sim.exe
-          elif [ -f "./build/hyper_ram_sim.exe" ]; then
-            ./build/hyper_ram_sim.exe
           else
             ./build/hyper_ram_sim
           fi
         shell: bash
 
   hdl_verilog_verification:
-    name: RTL Verilog & AXI4 Top Simulation
+    name: RTL Verilog Hardware Simulation
     runs-on: ubuntu-latest
 
     steps:
@@ -60,7 +68,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iverilog
 
-      - name: Compile Synthesizable Verilog Testbench
+      - name: Compile and Run LZ4 Hardware Decompressor Testbench
+        run: |
+          iverilog -g2012 -o lz4_tb.vvp \
+            hdl/lz4_decompressor_4k.v \
+            hdl/tb_lz4_decompressor.v
+          vvp lz4_tb.vvp
+
+      - name: Compile and Run Legacy AXI4 Verification Testbench
         run: |
           iverilog -g2012 -o hyper_ram_tb.vvp \
             hdl/axi_async_fifo.v \
@@ -68,6 +83,4 @@ jobs:
             hdl/bdi_decoder_64b.v \
             hdl/hyper_ram_axi_top.v \
             hdl/tb_hyper_ram_top.v
-
-      - name: Run Hardware RTL Simulation
-        run: vvp hyper_ram_tb.vvp
+          vvp hyper_ram_tb.vvp

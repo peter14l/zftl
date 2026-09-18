@@ -199,11 +199,249 @@ bool TestVirtualCapacityDoublerStress() {
     return true;
 }
 
+#include "lz4_compressor.hpp"
+#include <chrono>
+
+using namespace zftl;
+
+bool TestLZ4ZeroBlockLossless() {
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> src{};
+    CompressedBlock comp = LZ4Compressor::Compress(src.data());
+    TEST_ASSERT(comp.is_zero_block, "Must be flagged as zero block");
+    TEST_ASSERT(comp.slot == SlotAllocation::SPARSE_ZERO, "Must allocate SPARSE_ZERO slot");
+    TEST_ASSERT(comp.compressed_size == 0, "Compressed size must be 0 for zero block");
+
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> dest{};
+    dest.fill(0xFF);
+    bool ok = LZ4Compressor::Decompress(comp, dest.data());
+    TEST_ASSERT(ok, "Decompression failed on zero block");
+    TEST_ASSERT(std::memcmp(src.data(), dest.data(), FLASH_PAGE_SIZE) == 0, "Data mismatch on zero block");
+    return true;
+}
+
+bool TestLZ4TextJsonLossless() {
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> src{};
+    std::string sample = R"({"timestamp":"2026-09-18T08:00:00Z","level":"INFO","module":"kernel_pagefile","event_id":1042,"message":"Memory page evicted to compressed FTL swap cache successfully."})";
+    for (size_t i = 0; i < FLASH_PAGE_SIZE; ++i) {
+        src[i] = static_cast<uint8_t>(sample[i % sample.size()]);
+    }
+
+    CompressedBlock comp = LZ4Compressor::Compress(src.data());
+    TEST_ASSERT(comp.is_compressed, "Text/JSON must be compressed");
+    TEST_ASSERT(comp.compressed_size < 1024, "Repeated JSON should easily fit in 1KB slot");
+    TEST_ASSERT(comp.slot == SlotAllocation::SLOT_1KB, "Must allocate SLOT_1KB");
+
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> dest{};
+    dest.fill(0x00);
+    bool ok = LZ4Compressor::Decompress(comp, dest.data());
+    TEST_ASSERT(ok, "Decompression failed on JSON payload");
+    TEST_ASSERT(std::memcmp(src.data(), dest.data(), FLASH_PAGE_SIZE) == 0, "Data mismatch on JSON payload");
+    return true;
+}
+
+bool TestLZ4BinaryCodeLossless() {
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> src{};
+    // Simulate x86-64 code: repetitive function prologues, calls, NOP paddings
+    for (size_t i = 0; i < FLASH_PAGE_SIZE; i += 16) {
+        src[i + 0] = 0x55; // push rbp
+        src[i + 1] = 0x48; src[i + 2] = 0x89; src[i + 3] = 0xE5; // mov rbp, rsp
+        src[i + 4] = 0x48; src[i + 5] = 0x83; src[i + 6] = 0xEC; src[i + 7] = 0x20; // sub rsp, 32
+        src[i + 8] = 0x90; src[i + 9] = 0x90; src[i + 10] = 0x90; src[i + 11] = 0x90; // nop
+        src[i + 12] = 0xC9; // leave
+        src[i + 13] = 0xC3; // ret
+        src[i + 14] = 0xCC; src[i + 15] = 0xCC; // int3 padding
+    }
+
+    CompressedBlock comp = LZ4Compressor::Compress(src.data());
+    TEST_ASSERT(comp.is_compressed, "Binary code pattern must be compressed");
+    TEST_ASSERT(comp.compressed_size < 2048, "Repetitive code must compress to <= 2KB slot");
+
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> dest{};
+    bool ok = LZ4Compressor::Decompress(comp, dest.data());
+    TEST_ASSERT(ok, "Decompression failed on binary code");
+    TEST_ASSERT(std::memcmp(src.data(), dest.data(), FLASH_PAGE_SIZE) == 0, "Data mismatch on binary code");
+    return true;
+}
+
+bool TestLZ4IncompressibleFallback() {
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> src{};
+    std::mt19937_64 rng(1337);
+    for (size_t i = 0; i < FLASH_PAGE_SIZE; i += sizeof(uint64_t)) {
+        uint64_t val = rng();
+        std::memcpy(src.data() + i, &val, sizeof(uint64_t));
+    }
+
+    CompressedBlock comp = LZ4Compressor::Compress(src.data());
+    TEST_ASSERT(!comp.is_compressed, "High-entropy random noise must trigger fallback");
+    TEST_ASSERT(comp.compressed_size == FLASH_PAGE_SIZE, "Size must be 4096 bytes");
+    TEST_ASSERT(comp.slot == SlotAllocation::FULL_4KB, "Slot must be FULL_4KB");
+
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> dest{};
+    bool ok = LZ4Compressor::Decompress(comp, dest.data());
+    TEST_ASSERT(ok, "Decompression failed on incompressible fallback");
+    TEST_ASSERT(std::memcmp(src.data(), dest.data(), FLASH_PAGE_SIZE) == 0, "Data mismatch on random noise");
+    return true;
+}
+
+bool TestLZ4LatencyAndThroughput() {
+    constexpr size_t NUM_BLOCKS = 1000;
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> block{};
+    std::string text = "Telemetry log entry from Micron 2400 QLC SSD host write stream page allocation. ";
+    for (size_t i = 0; i < FLASH_PAGE_SIZE; ++i) {
+        block[i] = static_cast<uint8_t>(text[i % text.size()]);
+    }
+
+    auto start_comp = std::chrono::high_resolution_clock::now();
+    CompressedBlock comp;
+    for (size_t i = 0; i < NUM_BLOCKS; ++i) {
+        comp = LZ4Compressor::Compress(block.data());
+    }
+    auto end_comp = std::chrono::high_resolution_clock::now();
+
+    alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> dest{};
+    auto start_decomp = std::chrono::high_resolution_clock::now();
+    for (size_t i = 0; i < NUM_BLOCKS; ++i) {
+        LZ4Compressor::Decompress(comp, dest.data());
+    }
+    auto end_decomp = std::chrono::high_resolution_clock::now();
+
+    double comp_total_us = std::chrono::duration<double, std::micro>(end_comp - start_comp).count();
+    double decomp_total_us = std::chrono::duration<double, std::micro>(end_decomp - start_decomp).count();
+
+    double comp_per_block_us = comp_total_us / NUM_BLOCKS;
+    double decomp_per_block_us = decomp_total_us / NUM_BLOCKS;
+    double mb_processed = (NUM_BLOCKS * 4096.0) / (1024.0 * 1024.0);
+
+    double comp_throughput_mbs = mb_processed / (comp_total_us / 1e6);
+    double decomp_throughput_mbs = mb_processed / (decomp_total_us / 1e6);
+
+    std::cout << "    [Perf] 4KB Block Compression Latency:   " << comp_per_block_us << " us/block (" << comp_throughput_mbs << " MB/s)\n";
+    std::cout << "    [Perf] 4KB Block Decompression Latency: " << decomp_per_block_us << " us/block (" << decomp_throughput_mbs << " MB/s)\n";
+
+    TEST_ASSERT(comp_per_block_us < 5.0, "Compression latency should be < 5.0 us");
+    TEST_ASSERT(decomp_per_block_us < 2.0, "Decompression latency should be < 2.0 us");
+    return true;
+}
+
+#include "flash_model.hpp"
+#include "ftl_controller.hpp"
+
+bool TestFlashModelNANDPhysicalRules() {
+    FlashConfig cfg;
+    cfg.page_size_bytes = 4096;
+    cfg.pages_per_block = 64;
+    cfg.total_blocks = 16;
+    FlashModel flash(cfg);
+
+    alignas(64) std::array<uint8_t, 4096> page1{};
+    page1.fill(0x33);
+
+    // First program must succeed
+    bool ok = flash.ProgramPage(0, 0, page1.data());
+    TEST_ASSERT(ok, "Initial page program must succeed");
+
+    // Programming the SAME page without erasing MUST fail (NAND physical rule!)
+    ok = flash.ProgramPage(0, 0, page1.data());
+    TEST_ASSERT(!ok, "Overwriting programmed NAND page without block erase must fail!");
+
+    // Read back page
+    alignas(64) std::array<uint8_t, 4096> read_buf{};
+    ok = flash.ReadPage(0, 0, read_buf.data());
+    TEST_ASSERT(ok, "Read page must succeed");
+    TEST_ASSERT(std::memcmp(page1.data(), read_buf.data(), 4096) == 0, "Page data mismatch");
+
+    // Erase block
+    ok = flash.EraseBlock(0);
+    TEST_ASSERT(ok, "Block erase must succeed");
+    TEST_ASSERT(flash.GetEraseCount(0) == 1, "Erase count must be 1");
+
+    // Programming after erase must now succeed
+    ok = flash.ProgramPage(0, 0, page1.data());
+    TEST_ASSERT(ok, "Program after block erase must succeed");
+    return true;
+}
+
+bool TestFTLInLineHalfPagePackingAndWAF() {
+    FlashConfig flash_cfg;
+    flash_cfg.page_size_bytes = 4096;
+    flash_cfg.pages_per_block = 64;
+    flash_cfg.total_blocks = 32;
+
+    // 4 MB logical capacity = 1024 LBAs
+    FTLController ftl(4 * 1024 * 1024, flash_cfg);
+
+    // Write 100 compressible blocks (simulating browser cache and JSON logs)
+    std::string json_sample = R"({"trace_id":"req-99120","service":"browser_cache","payload":"cached DOM element tree and stylesheet rules for rendering engine"})";
+    std::vector<std::vector<uint8_t>> written_blocks(100, std::vector<uint8_t>(4096));
+
+    for (size_t i = 0; i < 100; ++i) {
+        for (size_t b = 0; b < 4096; ++b) {
+            written_blocks[i][b] = static_cast<uint8_t>(json_sample[(b + i) % json_sample.size()]);
+        }
+        bool ok = ftl.WriteBlock(i, written_blocks[i].data());
+        TEST_ASSERT(ok, "Failed to write compressible block to FTL");
+    }
+
+    ftl.FlushStagedWrites();
+
+    // Verify 100% lossless readback for all 100 blocks
+    alignas(64) std::array<uint8_t, 4096> read_buf{};
+    for (size_t i = 0; i < 100; ++i) {
+        bool ok = ftl.ReadBlock(i, read_buf.data());
+        TEST_ASSERT(ok, "Failed to read block from FTL");
+        TEST_ASSERT(std::memcmp(written_blocks[i].data(), read_buf.data(), 4096) == 0, "Readback mismatch on compressible block");
+    }
+
+    FTLTelemetry tel = ftl.GetTelemetry();
+    std::cout << "    [WAF Telemetry] Host Writes: " << tel.total_host_writes 
+              << " (" << (tel.total_host_bytes_written / 1024) << " KB)\n";
+    std::cout << "    [WAF Telemetry] Flash Pages Programmed: " << tel.flash_tel.total_pages_programmed 
+              << " (" << (tel.flash_tel.total_physical_bytes_written / 1024) << " KB)\n";
+    std::cout << "    [WAF Telemetry] Half-Page Packs: " << tel.compressed_half_pages_packed << "\n";
+    std::cout << "    [WAF Telemetry] Measured WAF: " << tel.write_amplification_factor << "\n";
+
+    // Because 100 compressible blocks were packed 2-per-page, only 50 physical pages were written!
+    TEST_ASSERT(tel.total_host_writes == 100, "Must be 100 host writes");
+    TEST_ASSERT(tel.flash_tel.total_pages_programmed <= 51, "Must have programmed <= 51 physical pages");
+    TEST_ASSERT(tel.write_amplification_factor <= 0.52, "WAF must be <= 0.52 on compressible data!");
+    return true;
+}
+
+bool TestFTLSparseZeroDeduplication() {
+    FlashConfig flash_cfg;
+    FTLController ftl(2 * 1024 * 1024, flash_cfg);
+
+    alignas(64) std::array<uint8_t, 4096> zero_buf{};
+    zero_buf.fill(0x00);
+
+    // Write 50 all-zero blocks (typical OS pagefile initialization)
+    for (size_t i = 0; i < 50; ++i) {
+        bool ok = ftl.WriteBlock(i, zero_buf.data());
+        TEST_ASSERT(ok, "Zero block write must succeed");
+    }
+
+    // Verify readback
+    alignas(64) std::array<uint8_t, 4096> read_buf{};
+    for (size_t i = 0; i < 50; ++i) {
+        read_buf.fill(0xFF);
+        bool ok = ftl.ReadBlock(i, read_buf.data());
+        TEST_ASSERT(ok, "Zero block read must succeed");
+        TEST_ASSERT(std::memcmp(zero_buf.data(), read_buf.data(), 4096) == 0, "Zero block read mismatch");
+    }
+
+    FTLTelemetry tel = ftl.GetTelemetry();
+    TEST_ASSERT(tel.zero_blocks_filtered == 50, "All 50 zero blocks must be filtered");
+    TEST_ASSERT(tel.flash_tel.total_pages_programmed == 0, "Zero pages must be written to flash");
+    TEST_ASSERT(tel.write_amplification_factor == 0.0, "WAF must be 0.0 for all-zero stream");
+    return true;
+}
+
 int main() {
     std::cout << "========================================================\n";
-    std::cout << "  HyperRAM Verification & Unit Test Suite (Lossless Core) \n";
+    std::cout << "  zFTL Verification & Unit Test Suite (Storage Core)    \n";
     std::cout << "========================================================\n";
 
+    // Legacy 64-byte BDI tests
     RUN_TEST(TestZerosLossless);
     RUN_TEST(TestRepeatedWordLossless);
     RUN_TEST(TestBase8Delta1Lossless);
@@ -212,6 +450,20 @@ int main() {
     RUN_TEST(TestLineTableAllocationAndCompaction);
     RUN_TEST(TestHyperRAMControllerByteAddressable);
     RUN_TEST(TestVirtualCapacityDoublerStress);
+
+    // Phase 2: 4KB Storage Block LZ4 tests
+    std::cout << "\n--- Phase 2: 4 KB Storage Block LZ4 Verification ---\n";
+    RUN_TEST(TestLZ4ZeroBlockLossless);
+    RUN_TEST(TestLZ4TextJsonLossless);
+    RUN_TEST(TestLZ4BinaryCodeLossless);
+    RUN_TEST(TestLZ4IncompressibleFallback);
+    RUN_TEST(TestLZ4LatencyAndThroughput);
+
+    // Phase 3: Flash Translation Layer & Physical NAND Flash Tests
+    std::cout << "\n--- Phase 3: FTL In-Line Compression & Flash WAF Tests ---\n";
+    RUN_TEST(TestFlashModelNANDPhysicalRules);
+    RUN_TEST(TestFTLInLineHalfPagePackingAndWAF);
+    RUN_TEST(TestFTLSparseZeroDeduplication);
 
     std::cout << "========================================================\n";
     std::cout << "  Summary: " << g_tests_passed << " Passed, " << g_tests_failed << " Failed\n";

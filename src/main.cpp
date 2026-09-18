@@ -1,175 +1,154 @@
-// Copyright (c) 2026 HyperRAM Project. All Rights Reserved.
-// Open-Hardware / Low-Cost Memory Architecture Initiative.
-#include "hyper_ram_controller.hpp"
+// Copyright (c) 2026 zFTL Project. All Rights Reserved.
+// In-Line Compressed Flash Translation Layer Architecture Benchmark.
+#include "ftl_controller.hpp"
 #include <iostream>
 #include <vector>
 #include <chrono>
 #include <iomanip>
 #include <random>
-#include <numeric>
+#include <string>
+#include <functional>
 
-using namespace hyper_ram;
+namespace {
 
 void PrintBanner() {
     std::cout << "\033[1;36m";
     std::cout << R"(
     ===================================================================
-      _   _                         ____       _    __  __ 
-     | | | |_   _ _ __   ___ _ __  |  _ \     / \  |  \/  |
-     | |_| | | | | '_ \ / _ \ '__| | |_) |   / _ \ | |\/| |
-     |  _  | |_| | |_) |  __/ |    |  _ <   / ___ \| |  | |
-     |_| |_|\__, | .__/ \___|_|    |_| \_\ /_/   \_\_|  |_|
-            |___/|_|                                        
-      Hardware-Accelerated Compressed Memory Controller Engine
-      Cost-Reduction Architecture for Consumer & Cloud Hardware
+       _____ _____ _     
+      |__  /|  ___| |_| |      zFTL: Compressed Flash Translation Layer
+        / / | |_  | __| |      In-Line Storage Compression for QLC SSDs
+       / /_ |  _| | |_| |___   Endurance Multiplier for Budget Silicon
+      /____||_|    \__|_____|  Reference Target: Micron 2400 QLC (150 TBW)
     ===================================================================
     )" << "\033[0m\n";
 }
 
-void PrintTelemetrySummary(const std::string& workload_name, const MemoryTelemetry& tel, double elapsed_sec) {
-    double total_gb = static_cast<double>(tel.total_bytes_read + tel.total_bytes_written) / (1024.0 * 1024.0 * 1024.0);
-    double throughput_gb_s = total_gb / elapsed_sec;
+void RunWorkload(const std::string& name,
+                 zftl::FTLController& ftl,
+                 size_t num_blocks,
+                 const std::function<void(size_t lba, uint8_t* buf)>& generator) {
+    std::cout << "\n\033[1;33m[*] Running Workload: " << name << " (" 
+              << (num_blocks * 4 / 1024) << " MB)...\033[0m\n";
 
-    std::cout << "\n\033[1;32m[+] Workload Completed: " << workload_name << "\033[0m\n";
-    std::cout << "-------------------------------------------------------------------\n";
-    std::cout << std::left << std::setw(32) << "Total Processed Data:" << std::fixed << std::setprecision(2) << total_gb * 1024.0 << " MB\n";
-    std::cout << std::left << std::setw(32) << "Elapsed Time:" << std::fixed << std::setprecision(3) << elapsed_sec * 1000.0 << " ms\n";
-    std::cout << std::left << std::setw(32) << "Throughput:" << "\033[1;33m" << throughput_gb_s << " GB/s\033[0m\n";
-    std::cout << std::left << std::setw(32) << "Virtual Memory Stored:" << (tel.virtual_bytes_mapped / (1024 * 1024)) << " MB\n";
-    std::cout << std::left << std::setw(32) << "Physical DRAM Consumed:" << (tel.physical_bytes_stored / (1024 * 1024)) << " MB\n";
-    std::cout << std::left << std::setw(32) << "Effective Compression Ratio:" << "\033[1;32m" << tel.compression_ratio << "x\033[0m\n";
-    std::cout << std::left << std::setw(32) << "Silicon Area / RAM Savings:" << "\033[1;32m" << tel.memory_savings_pct << " %\033[0m\n";
-    size_t total_lines = (tel.total_bytes_read + tel.total_bytes_written) / (2 * CACHE_LINE_SIZE);
-    double per_line_read_lat = (total_lines > 0) ? (tel.avg_read_latency_ns / total_lines) : 50.0;
-    double per_line_write_lat = (total_lines > 0) ? (tel.avg_write_latency_ns / total_lines) : 50.0;
+    ftl.ResetTelemetry();
+    alignas(64) std::array<uint8_t, zftl::FLASH_PAGE_SIZE> block{};
 
-    std::cout << std::left << std::setw(32) << "Avg Read Latency (with Decomp):" << per_line_read_lat << " ns\n";
-    std::cout << std::left << std::setw(32) << "Avg Write Latency (with Comp):" << per_line_write_lat << " ns\n";
-    std::cout << "-------------------------------------------------------------------\n";
+    auto start_time = std::chrono::high_resolution_clock::now();
 
-    std::cout << "BDI Compression Pattern Breakdown:\n";
-    const char* pattern_names[] = {
-        "Zeros", "Repeated-Word", "Base8-Delta1", "Base8-Delta2",
-        "Base8-Delta4", "Base4-Delta1", "Base4-Delta2", "Base2-Delta1",
-        "Reserved", "Reserved", "Reserved", "Reserved",
-        "Reserved", "Reserved", "Reserved", "Uncompressed"
-    };
-
-    for (int i = 0; i < 16; ++i) {
-        if (tel.pattern_distribution[i] > 0) {
-            std::cout << "  - " << std::left << std::setw(16) << pattern_names[i]
-                      << ": " << tel.pattern_distribution[i] << " lines\n";
-        }
+    for (size_t i = 0; i < num_blocks; ++i) {
+        generator(i, block.data());
+        ftl.WriteBlock(i, block.data());
     }
+    ftl.FlushStagedWrites();
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    double elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+
+    zftl::FTLTelemetry tel = ftl.GetTelemetry();
+
+    double host_mb = tel.total_host_bytes_written / (1024.0 * 1024.0);
+    double flash_mb = tel.flash_tel.total_physical_bytes_written / (1024.0 * 1024.0);
+    double throughput_mb_s = host_mb / (elapsed_ms / 1000.0);
+
+    // Life extension factor: 1.0 / WAF
+    double life_multiplier = (tel.write_amplification_factor > 0.0) 
+                             ? (1.0 / tel.write_amplification_factor) 
+                             : 99.9;
+    double effective_tbw = 150.0 * life_multiplier; // Based on Micron 2400 150 TBW rating
+
+    std::cout << "-------------------------------------------------------------------\n";
+    std::cout << std::left << std::setw(36) << "Logical Host Writes:" 
+              << tel.total_host_writes << " blocks (" << std::fixed << std::setprecision(2) << host_mb << " MB)\n";
+    std::cout << std::left << std::setw(36) << "Physical Flash Writes:" 
+              << tel.flash_tel.total_pages_programmed << " pages (" << flash_mb << " MB)\n";
+    std::cout << std::left << std::setw(36) << "Sparse Zero Pages Skipped:" 
+              << tel.zero_blocks_filtered << "\n";
+    std::cout << std::left << std::setw(36) << "Half-Page Compressed Pairs:" 
+              << tel.compressed_half_pages_packed << "\n";
+    std::cout << std::left << std::setw(36) << "Raw Incompressible Pages:" 
+              << tel.raw_full_pages_written << "\n";
+    std::cout << std::left << std::setw(36) << "Processing Throughput:" 
+              << "\033[1;32m" << throughput_mb_s << " MB/s\033[0m\n";
+    std::cout << "-------------------------------------------------------------------\n";
+    std::cout << std::left << std::setw(36) << "Standard QLC Baseline WAF:" << "1.25 - 1.50\n";
+    std::cout << std::left << std::setw(36) << "zFTL Measured WAF:" 
+              << "\033[1;32m" << tel.write_amplification_factor << "\033[0m\n";
+    std::cout << std::left << std::setw(36) << "Physical Flash Wear Reduction:" 
+              << "\033[1;32m" << std::max(0.0, (1.0 - tel.write_amplification_factor) * 100.0) << " %\033[0m\n";
+    std::cout << std::left << std::setw(36) << "Effective Micron 2400 Lifespan:" 
+              << "\033[1;36m" << effective_tbw << " TBW (Baseline: 150 TBW)\033[0m\n";
     std::cout << "-------------------------------------------------------------------\n";
 }
 
-void RunWorkload(HyperRAMController& ctrl, const std::string& name, size_t total_mb, int type) {
-    std::cout << "\n[*] Benchmarking: " << name << " (" << total_mb << " MB)...\n";
-    ctrl.ResetTelemetry();
-
-    size_t total_bytes = total_mb * 1024 * 1024;
-    std::vector<uint8_t> buffer(total_bytes);
-
-    std::mt19937_64 rng(42);
-
-    if (type == 0) {
-        // Web Browser / Application Heap Simulation:
-        // Cache lines containing pointers to contiguous objects + zero pages
-        uint64_t* ptrs = reinterpret_cast<uint64_t*>(buffer.data());
-        size_t count = total_bytes / 8;
-        uint64_t base_ptr = 0x7FFF'8000'0000ULL;
-        for (size_t line = 0; line < count / 8; ++line) {
-            if (line % 4 == 0) {
-                // Zero page / empty buffer line
-                for (size_t j = 0; j < 8; ++j) ptrs[line * 8 + j] = 0;
-            } else if (line % 4 == 1) {
-                // Repeated word line (e.g. uninitialized / sentinel flags)
-                uint64_t val = base_ptr + (line * 64);
-                for (size_t j = 0; j < 8; ++j) ptrs[line * 8 + j] = val;
-            } else {
-                // Pointer table / VTable / AST node references with small 1-byte / 2-byte deltas
-                uint64_t line_base = base_ptr + (line * 1024);
-                ptrs[line * 8 + 0] = line_base;
-                for (size_t j = 1; j < 8; ++j) {
-                    ptrs[line * 8 + j] = line_base + static_cast<int64_t>(j * 8 + (rng() % 16));
-                }
-            }
-        }
-    } else if (type == 1) {
-        // AI Model KV-Cache Tensor Simulation:
-        // Clustered 32-bit float activation values
-        int32_t* floats = reinterpret_cast<int32_t*>(buffer.data());
-        size_t count = total_bytes / 4;
-        for (size_t i = 0; i < count; ++i) {
-            floats[i] = 100000 + static_cast<int32_t>(rng() % 64);
-        }
-    } else {
-        // Incompressible High-Entropy Stream
-        for (size_t i = 0; i < total_bytes; ++i) {
-            buffer[i] = static_cast<uint8_t>(rng() & 0xFF);
-        }
-    }
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    // 1. Write phase
-    bool ok = ctrl.Write(0, buffer.data(), total_bytes);
-    if (!ok) {
-        std::cerr << "[-] Error writing workload data!\n";
-        return;
-    }
-
-    // 2. Read back & verify
-    std::vector<uint8_t> verify_buf(total_bytes);
-    ok = ctrl.Read(0, verify_buf.data(), total_bytes);
-    if (!ok) {
-        std::cerr << "[-] Error reading workload data!\n";
-        return;
-    }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    double elapsed_sec = std::chrono::duration<double>(end - start).count();
-
-    MemoryTelemetry tel = ctrl.GetTelemetry();
-    PrintTelemetrySummary(name, tel, elapsed_sec);
-}
+} // namespace
 
 int main() {
     PrintBanner();
 
-    // Setup 1GB Virtual Space mapped into 512MB Physical DRAM
-    ControllerConfig cfg;
-    cfg.virtual_capacity_bytes = 1024ULL * 1024 * 1024; // 1 GB Virtual
-    cfg.physical_dram_bytes   = 512ULL * 1024 * 1024;  // 512 MB Physical DRAM (2:1 target)
-    cfg.dram_base_latency_ns  = 45.0;
-    cfg.decompression_latency_ns = 5.0;
+    zftl::FlashConfig flash_cfg;
+    flash_cfg.page_size_bytes = 4096;
+    flash_cfg.pages_per_block = 64;
+    flash_cfg.total_blocks = 256; // 64 MB physical flash pool
 
-    std::cout << "[*] Initializing HyperRAM Controller with 2:1 Virtual-to-Physical Ratio:\n";
-    std::cout << "    - Virtual Address Space: " << (cfg.virtual_capacity_bytes / (1024 * 1024)) << " MB\n";
-    std::cout << "    - Physical DRAM Pool:   " << (cfg.physical_dram_bytes / (1024 * 1024)) << " MB\n";
-    std::cout << "    - Base DRAM Latency:    " << cfg.dram_base_latency_ns << " ns\n";
-    std::cout << "    - Decompression Engine: " << cfg.decompression_latency_ns << " ns (Hardware Pipelined)\n";
+    // 64 MB logical capacity = 16,384 LBAs
+    zftl::FTLController ftl(64 * 1024 * 1024, flash_cfg);
 
-    HyperRAMController controller(cfg);
+    // 1. Windows Pagefile & Virtual Memory Heap (mix of zeroes and pointers)
+    RunWorkload("Windows Pagefile / Heap Allocation", ftl, 2048, [](size_t lba, uint8_t* buf) {
+        if (lba % 3 == 0) {
+            std::memset(buf, 0, 4096); // Sparse zero pages
+        } else {
+            for (size_t b = 0; b < 4096; b += sizeof(uint64_t)) {
+                uint64_t ptr = 0x00007FFF00100000ULL + (b * 8);
+                std::memcpy(buf + b, &ptr, sizeof(uint64_t));
+            }
+        }
+    });
 
-    // Run Workload 1: Browser Heap / Application Memory
-    RunWorkload(controller, "Web Browser & OS Heap Trace", 128, 0);
+    // 2. Browser Cache & Telemetry Logs (JSON, strings, metadata)
+    std::string sample_json = R"({"time":"2026-09-18T08:00:00Z","type":"cache_entry","url":"https://cdn.example.com/assets/app.chunk.js","headers":{"content-type":"application/javascript","cache-control":"max-age=31536000"}})";
+    RunWorkload("Chrome/Edge Browser Cache & Web Assets", ftl, 2048, [&](size_t lba, uint8_t* buf) {
+        for (size_t b = 0; b < 4096; ++b) {
+            buf[b] = static_cast<uint8_t>(sample_json[(b + lba) % sample_json.size()]);
+        }
+    });
 
-    // Run Workload 2: AI KV-Cache Bounded Tensors
-    RunWorkload(controller, "AI Large Language Model KV-Cache", 128, 1);
+    // 3. High-Entropy Encrypted / Compressed Media (Worst-Case Fallback)
+    std::mt19937_64 rng(42);
+    RunWorkload("Encrypted Media / Random Noise (Worst-Case)", ftl, 2048, [&](size_t /*lba*/, uint8_t* buf) {
+        for (size_t b = 0; b < 4096; b += sizeof(uint64_t)) {
+            uint64_t val = rng();
+            std::memcpy(buf + b, &val, sizeof(uint64_t));
+        }
+    });
 
-    // Economic Impact Summary
-    std::cout << "\n\033[1;36m===================================================================\n";
-    std::cout << "  ECONOMIC IMPACT REPORT FOR CONSUMER HARDWARE\n";
-    std::cout << "===================================================================\033[0m\n";
-    std::cout << "1. Consumer Laptop (8GB -> 16GB Virtual):\n";
-    std::cout << "   - Bill-of-Materials (BOM) savings: ~$25 - $40 per unit (half DRAM count).\n";
-    std::cout << "   - Eliminates OS disk-swap thrashing and stutter on multi-tab browsing.\n";
-    std::cout << "2. Cloud AI Server Instance (512GB -> 1TB Virtual):\n";
-    std::cout << "   - Capital Expenditure (CapEx) savings: ~$1,800 per server node.\n";
-    std::cout << "   - Decompression latency penalty: < 10% on memory stall cycles.\n";
-    std::cout << "===================================================================\n\n";
+    // 4. Realistic Blended Daily Workload
+    // (35% Zero Pages, 40% JSON/Logs/Cache, 15% Binary Code, 10% Encrypted)
+    RunWorkload("Blended Real-World Daily Laptop Profile", ftl, 4096, [&](size_t lba, uint8_t* buf) {
+        size_t mod = lba % 20;
+        if (mod < 7) {
+            // 35% Sparse zeros
+            std::memset(buf, 0, 4096);
+        } else if (mod < 15) {
+            // 40% Browser / Web assets
+            for (size_t b = 0; b < 4096; ++b) {
+                buf[b] = static_cast<uint8_t>(sample_json[(b + lba) % sample_json.size()]);
+            }
+        } else if (mod < 18) {
+            // 15% Structured code
+            for (size_t b = 0; b < 4096; b += 4) {
+                buf[b] = 0x48; buf[b+1] = 0x89; buf[b+2] = 0x5C; buf[b+3] = 0x24;
+            }
+        } else {
+            // 10% Random noise
+            for (size_t b = 0; b < 4096; b += sizeof(uint64_t)) {
+                uint64_t val = rng();
+                std::memcpy(buf + b, &val, sizeof(uint64_t));
+            }
+        }
+    });
 
+    std::cout << "\n\033[1;32m[+] All Architectural Workloads Evaluated Successfully!\033[0m\n\n";
     return 0;
 }

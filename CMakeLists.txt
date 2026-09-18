@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(hyper_ram LANGUAGES CXX)
+project(zftl LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 11)
 
 # Compiler optimization flags
 if (MSVC)
@@ -14,35 +15,25 @@ endif()
 
 include_directories(include)
 
-# HyperRAM Library
-add_library(hyper_ram_core STATIC
+# zFTL Core Library
+add_library(zftl_core STATIC
+    src/lz4.c
+    src/lz4_compressor.cpp
+    src/flash_model.cpp
+    src/ftl_controller.cpp
     src/bdi_engine.cpp
     src/line_table.cpp
     src/hyper_ram_controller.cpp
 )
 
 # CLI & Benchmark Executable
-add_executable(hyper_ram_sim
+add_executable(zftl_sim
     src/main.cpp
 )
-target_link_libraries(hyper_ram_sim PRIVATE hyper_ram_core)
+target_link_libraries(zftl_sim PRIVATE zftl_core)
 
-# Unit & Stress Test Suite
-add_executable(hyper_ram_tests
+# Unit & Verification Test Suite
+add_executable(zftl_tests
     src/tests.cpp
 )
-target_link_libraries(hyper_ram_tests PRIVATE hyper_ram_core)
-
-# Standalone Windows Memory Optimizer Utility (For End-Users)
-if (WIN32)
-    add_executable(HyperRAM_Optimizer
-        src/win_optimizer.cpp
-    )
-    target_link_libraries(HyperRAM_Optimizer PRIVATE psapi)
-
-    # 100% Silent 24x7 Background Daemon (Zero console window, WIN32 GUI subsystem)
-    add_executable(HyperRAM_SilentDaemon WIN32
-        src/win_silent_daemon.cpp
-    )
-    target_link_libraries(HyperRAM_SilentDaemon PRIVATE psapi)
-endif()
+target_link_libraries(zftl_tests PRIVATE zftl_core)
