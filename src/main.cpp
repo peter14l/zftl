@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 #include <functional>
+#include <cstring>
 
 namespace {
 

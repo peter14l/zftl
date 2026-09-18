@@ -67,18 +67,23 @@ module tb_lz4_decompressor;
         if (busy) cycle_count <= cycle_count + 1;
     end
 
+    // Watchdog timer (prevents testbench hanging indefinitely)
+    initial begin
+        #100000;
+        $display("[-] ERROR: Simulation watchdog timeout!");
+        $finish;
+    end
+
     // Task: Feed Byte to Decompressor
     task send_byte(input [7:0] b, input is_last);
         begin
-            @(posedge clk);
             s_axis_tdata  <= b;
             s_axis_tvalid <= 1'b1;
             s_axis_tlast  <= is_last;
-            
+            @(posedge clk);
             while (!s_axis_tready) begin
                 @(posedge clk);
             end
-            @(posedge clk);
             s_axis_tvalid <= 1'b0;
             s_axis_tlast  <= 1'b0;
         end

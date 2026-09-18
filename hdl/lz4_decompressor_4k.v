@@ -47,6 +47,7 @@ module lz4_decompressor_4k #(
     reg [15:0] match_offset;
     reg [3:0]  saved_match_token;
     reg [7:0]  offset_low;
+    reg        last_byte_seen;
 
     // Dual-Port History Buffer (Synthesizes to 4KB Block RAM)
     reg [7:0] history_ram [0:MAX_BLOCK_SIZE-1];
@@ -67,17 +68,23 @@ module lz4_decompressor_4k #(
             match_offset       <= 16'd0;
             saved_match_token  <= 4'd0;
             offset_low         <= 8'd0;
+            last_byte_seen     <= 1'b0;
             s_axis_tready      <= 1'b0;
             m_axis_tvalid      <= 1'b0;
             m_axis_tdata       <= 8'd0;
             m_axis_tlast       <= 1'b0;
         end else begin
+            if (s_axis_tvalid && s_axis_tready && s_axis_tlast) begin
+                last_byte_seen <= 1'b1;
+            end
+
             case (state)
                 ST_IDLE: begin
-                    done          <= 1'b0;
-                    error_flag    <= 1'b0;
-                    m_axis_tvalid <= 1'b0;
-                    m_axis_tlast  <= 1'b0;
+                    done           <= 1'b0;
+                    error_flag     <= 1'b0;
+                    last_byte_seen <= 1'b0;
+                    m_axis_tvalid  <= 1'b0;
+                    m_axis_tlast   <= 1'b0;
                     if (start) begin
                         busy               <= 1'b1;
                         write_ptr          <= 13'd0;
@@ -198,8 +205,9 @@ module lz4_decompressor_4k #(
                         decompressed_bytes     <= decompressed_bytes + 1'b1;
 
                         if (match_len == 16'd1) begin
-                            if (write_ptr + 1'b1 == MAX_BLOCK_SIZE) begin
-                                state <= ST_DONE;
+                            if (write_ptr + 1'b1 == MAX_BLOCK_SIZE || last_byte_seen) begin
+                                state         <= ST_DONE;
+                                s_axis_tready <= 1'b0;
                             end else begin
                                 s_axis_tready <= 1'b1;
                                 state         <= ST_TOKEN;
