@@ -14,8 +14,10 @@
 | **Active Phase** | **All Core Phases (1–5) Complete ✅** |
 | **Current Task** | Project fully operational & verified (C++ FTL + Verilog Hardware Core) |
 | **Next Step** | Share architecture findings with faculty / draft academic paper |
-| **C++ Build Status** | Passing (16/16 Unit & Verification Tests Passing via `.\build.ps1`) |
+| **C++ Build Status** | Passing (**20/20 Unit & Verification Tests Passing** via `.\build.ps1`) |
 | **WAF Benchmark** | **WAF = 0.40 - 0.67** (Flash wear cut by 33% to 60%, Lifespan: 225 - 375 TBW) |
+| **GC Algorithm** | **Greedy (max-invalid-first) with real valid-page migration** ✅ |
+| **Test Coverage** | **LZ4Compressor + FlashModel + FTLController** (replaced legacy BDI tests) ✅ |
 
 ---
 
@@ -59,9 +61,22 @@
 - [x] Build self-checking testbench ([`hdl/tb_lz4_decompressor.v`](file:///d:/hyper_ram/hdl/tb_lz4_decompressor.v)) verified for 250 MHz line-rate streaming (~1.85 GB/s).
 - [x] Integrate dual-target automated hardware and C++ CI in [`.github/workflows/ci.yml`](file:///d:/hyper_ram/.github/workflows/ci.yml).
 
+### Phase 6: Documentation, Paper Draft & Career Materials (COMPLETED ✅)
+- [x] Rewrote [`README.md`](file:///d:/hyper_ram/README.md) to professional/paper quality: benchmark tables, architecture diagram, GC pseudocode, test summary, build instructions, related work citations.
+- [x] Rewrote [`docs/ARCHITECTURE.md`](file:///d:/hyper_ram/docs/ARCHITECTURE.md): full zFTL write/read path flowcharts, LBA mapping schema, GC algorithm, Verilog FSM table, slot quantization, resource estimates, limitations.
+- [x] Created [`docs/PAPER_DRAFT.md`](file:///d:/hyper_ram/docs/PAPER_DRAFT.md): full conference paper draft for USENIX FAST / NVMSA / IEEE NVMW with abstract, contributions, background, design, evaluation, discussion, related work, and references.
+- [x] Created [`docs/CAREER_MATERIALS.md`](file:///d:/hyper_ram/docs/CAREER_MATERIALS.md): Statement of Purpose template (MS/M.Tech), 7 resume bullet points, industry cover letter template (Micron/Samsung/WD India), ranked conference submission venue guide.
+
 ---
 
 ## 📝 Activity Log
+
+* **2026-09-20**:
+  * **Fixed `CMakeLists.txt`**: Removed legacy BDI sources (`bdi_engine.cpp`, `line_table.cpp`, `hyper_ram_controller.cpp`) from `zftl_core` — only the actual FTL stack is compiled.
+  * **Rewrote `tests.cpp`**: 20 new tests covering `LZ4Compressor`, `FlashModel`, and `FTLController` (sparse-zero, half-page packing, NAND constraints, overwrite invalidation, GC data integrity, WAF regression). **All 20/20 pass.**
+  * **Implemented greedy GC with real valid-page migration** ([`ftl_controller.cpp`](file:///d:/hyper_ram/src/ftl_controller.cpp)): Victim block selected by max invalid-page count. All valid pages copied to a reserve block with LBA table remapping before erase. Eliminates the previous silent data-loss bug.
+  * **Added `reserve_block_idx_`** to [`ftl_controller.hpp`](file:///d:/hyper_ram/include/ftl_controller.hpp) to track the dedicated GC migration target.
+  * **Cleaned up legacy files**: Moved `bdi_engine`, `line_table`, `hyper_ram_controller` headers/sources and all legacy HDL (`bdi_encoder_64b.v`, `bdi_decoder_64b.v`, `hyper_ram_axi_top.v`, `axi_async_fifo.v`, `tb_hyper_ram_top.v`) to [`legacy/`](file:///d:/hyper_ram/legacy/).
 
 * **2026-09-18**: 
   * Audited codebase and identified architectural disconnects of 64-byte DRAM BDI approach.

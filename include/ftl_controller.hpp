@@ -63,6 +63,7 @@ private:
     // Active allocation block and page pointer
     size_t active_block_idx_{0};
     size_t active_page_idx_{0};
+    size_t reserve_block_idx_{1}; // Dedicated block held for GC page migration
 
     // Staging buffer for packing two 2KB compressed half-pages into one 4KB flash page
     struct StagedHalfPage {
@@ -79,9 +80,8 @@ private:
     };
     std::vector<std::vector<std::vector<PageOwner>>> block_page_owners_;
 
-    // Garbage Collection
+    // Garbage Collection (greedy: selects victim with most invalid pages)
     void RunGarbageCollectionIfNeeded() noexcept;
-    size_t AllocatePhysicalPage() noexcept; // Returns (block, page) index
 
     mutable std::mutex ftl_mutex_;
 

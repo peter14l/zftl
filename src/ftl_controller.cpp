@@ -189,26 +189,75 @@ bool FTLController::ReadBlock(uint64_t lba, void* dest_4kb) noexcept {
 }
 
 void FTLController::RunGarbageCollectionIfNeeded() noexcept {
-    // If active block is full, pick next free block
-    if (active_page_idx_ >= flash_.GetPagesPerBlock()) {
-        active_block_idx_ = (active_block_idx_ + 1) % flash_.GetTotalBlocks();
-        active_page_idx_ = 0;
+    if (active_page_idx_ < flash_.GetPagesPerBlock()) return;
 
-        // If next block is dirty (has programmed pages), reclaim it via GC
-        if (flash_.IsPageProgrammed(active_block_idx_, 0)) {
-            gc_count_++;
-
-            // Find valid pages in victim block and migrate them
-            size_t victim = active_block_idx_;
-            for (size_t p = 0; p < flash_.GetPagesPerBlock(); ++p) {
-                if (flash_.IsPageValid(victim, p)) {
-                    gc_migrated_pages_++;
-                    // In a full FTL, valid pages are copied to a reserve block
-                }
-                block_page_owners_[victim][p].clear();
-            }
-            flash_.EraseBlock(victim);
+    // --- Phase 1: Greedy victim selection ---
+    // Pick the block with the most invalid pages (maximum reclaimable space).
+    // Skip the dedicated reserve block so it stays available for migrations.
+    size_t victim = 0;
+    uint32_t max_invalid = 0;
+    for (size_t b = 0; b < flash_.GetTotalBlocks(); ++b) {
+        if (b == reserve_block_idx_) continue;
+        uint32_t inv = flash_.GetInvalidCount(b);
+        if (inv > max_invalid) {
+            max_invalid = inv;
+            victim = b;
         }
+    }
+
+    // No block has invalid pages — advance to the reserve block and rotate it.
+    if (max_invalid == 0) {
+        active_block_idx_ = reserve_block_idx_;
+        active_page_idx_  = 0;
+        reserve_block_idx_ = (reserve_block_idx_ + 1) % flash_.GetTotalBlocks();
+        return;
+    }
+
+    gc_count_++;
+
+    // --- Phase 2: Migrate all VALID pages from victim → reserve block ---
+    size_t reserve_write_page = 0;
+    for (size_t p = 0; p < flash_.GetPagesPerBlock(); ++p) {
+        if (!flash_.IsPageValid(victim, p)) {
+            block_page_owners_[victim][p].clear();
+            continue;
+        }
+
+        // Read valid page data from victim block
+        alignas(64) std::array<uint8_t, FLASH_PAGE_SIZE> tmp{};
+        flash_.ReadPage(victim, p, tmp.data());
+
+        // Write into the reserve block
+        flash_.ProgramPage(reserve_block_idx_, reserve_write_page, tmp.data());
+        gc_migrated_pages_++;
+
+        // Re-point every LBA that lived on (victim, p) to the new (reserve, page)
+        for (const PageOwner& owner : block_page_owners_[victim][p]) {
+            if (owner.lba < lba_table_.size()) {
+                MappingEntry& entry = lba_table_[owner.lba];
+                entry.block_idx = static_cast<uint32_t>(reserve_block_idx_);
+                entry.page_idx  = static_cast<uint32_t>(reserve_write_page);
+            }
+        }
+
+        // Transfer ownership record to the reserve block
+        block_page_owners_[reserve_block_idx_][reserve_write_page] =
+            std::move(block_page_owners_[victim][p]);
+
+        ++reserve_write_page;
+    }
+
+    // --- Phase 3: Erase victim and repurpose it as the active write block ---
+    flash_.EraseBlock(victim);
+    block_page_owners_[victim].assign(flash_.GetPagesPerBlock(), {});
+
+    active_block_idx_ = victim;
+    active_page_idx_  = 0;
+
+    // Rotate the reserve pointer to the next block
+    reserve_block_idx_ = (reserve_block_idx_ + 1) % flash_.GetTotalBlocks();
+    if (reserve_block_idx_ == active_block_idx_) {
+        reserve_block_idx_ = (reserve_block_idx_ + 1) % flash_.GetTotalBlocks();
     }
 }
 

@@ -21,9 +21,6 @@ add_library(zftl_core STATIC
     src/lz4_compressor.cpp
     src/flash_model.cpp
     src/ftl_controller.cpp
-    src/bdi_engine.cpp
-    src/line_table.cpp
-    src/hyper_ram_controller.cpp
 )
 
 # CLI & Benchmark Executable
